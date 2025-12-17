@@ -56,7 +56,7 @@ st.markdown("""
 def load_models():
     """Load the trained model, label encoder, and embedding model"""
     try:
-        model = joblib.load('models/airline_sentiment_svm.pkl')
+        model = joblib.load('models/airline_sentiment_lr.pkl')
         encoder = joblib.load('models/label_encoder.pkl')
         embedding_model = SentenceTransformer("all-MiniLM-L12-v2")
         return model, encoder, embedding_model
