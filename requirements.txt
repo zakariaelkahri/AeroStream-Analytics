@@ -1,0 +1,32 @@
+# Core app + notebooks
+pandas
+numpy
+scikit-learn
+joblib
+plotly
+matplotlib
+seaborn
+pyarrow-11.0.0
+datasets-2.10.0
+nltk
+
+# NLP embeddings
+sentence-transformers
+
+# Vector DB (used in notebooks)
+chromadb
+
+# API
+fastapi
+uvicorn[standard]
+
+# UI client
+streamlit
+requests
+
+# DB client libs (useful for notebooks/services)
+SQLAlchemy
+psycopg2-binary
+
+# Quality-of-life
+python-dotenv

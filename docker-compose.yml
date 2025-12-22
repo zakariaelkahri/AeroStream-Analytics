@@ -1,0 +1,186 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: aerostream-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-aerostream}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aerostream}
+      POSTGRES_DB: ${POSTGRES_DB:-aerostream}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  pgadmin:
+    image: dpage/pgadmin4:8
+    container_name: aerostream-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@local.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-admin}
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  fastapi:
+    build:
+      context: .
+      dockerfile: ./FastApi/Dockerfile
+    container_name: aerostream-fastapi
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg2://aerostream:aerostream@postgres:5432/aerostream}
+    volumes:
+      - ./FastApi:/app/FastApi
+      - ./models:/app/models
+
+    working_dir: /app
+    command: ["uvicorn", "FastApi.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    ports:
+      - "${FASTAPI_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  streamlit:
+    build:
+      context: .
+      dockerfile: ./streamlit/Dockerfile
+    container_name: aerostream-streamlit
+    environment:
+      FASTAPI_URL: ${FASTAPI_URL:-http://fastapi:8000}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg2://aerostream:aerostream@postgres:5432/aerostream}
+    volumes:
+      - ./streamlit:/app
+      - ./streamlit/app.py:/app/app.py          # map your Streamlit app
+      - ./models:/app/models 
+    working_dir: /app
+    command: ["streamlit", "run", "app.py", "--server.address=0.0.0.0", "--server.port=8501"]
+    ports:
+      - "${STREAMLIT_PORT:-8501}:8501"
+    depends_on:
+      - fastapi
+    restart: unless-stopped
+
+  jupyter:
+    build:
+      context: .
+      dockerfile: ./jupyter/Dockerfile
+    container_name: aerostream-jupyter
+    environment:
+      JUPYTER_ENABLE_LAB: "yes"
+      JUPYTER_TOKEN: ${JUPYTER_TOKEN:-aerostream}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg2://aerostream:aerostream@postgres:5432/aerostream}
+
+    ports:
+      - "${JUPYTER_PORT:-8888}:8888"
+    volumes:
+      - ./jupyter:/home/jovyan/work
+      - ./data:/home/jovyan/data
+      - ./chroma_db:/home/jovyan/chroma_db
+      - ./models:/home/jovyan/models
+    working_dir: /home/jovyan/work
+    restart: unless-stopped
+
+
+  airflow-init:
+    build:
+      context: ./airflow
+      dockerfile: Dockerfile
+    container_name: aerostream-airflow-init
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: ${AIRFLOW_DB_URL:-postgresql+psycopg2://aerostream:aerostream@postgres:5432/aerostream}
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-aerostream_secret_key}
+      AEROSTREAM_FASTAPI_URL: ${FASTAPI_URL:-http://fastapi:8000}
+      AEROSTREAM_DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg2://aerostream:aerostream@postgres:5432/aerostream}
+      AEROSTREAM_BATCH_SIZE: ${AEROSTREAM_BATCH_SIZE:-10}
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - airflow_logs:/opt/airflow/logs
+      - airflow_plugins:/opt/airflow/plugins
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      - bash
+      - -c
+      - |
+        airflow db migrate
+        airflow users create \
+          --username ${AIRFLOW_USERNAME:-airflow} \
+          --password ${AIRFLOW_PASSWORD:-airflow} \
+          --firstname Aero \
+          --lastname Stream \
+          --role Admin \
+          --email ${AIRFLOW_EMAIL:-airflow@local.com} \
+          || true
+
+  airflow-webserver:
+    build:
+      context: ./airflow
+      dockerfile: Dockerfile
+    container_name: aerostream-airflow-webserver
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: ${AIRFLOW_DB_URL:-postgresql+psycopg2://aerostream:aerostream@postgres:5432/aerostream}
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-aerostream_secret_key}
+      AEROSTREAM_FASTAPI_URL: ${FASTAPI_URL:-http://fastapi:8000}
+      AEROSTREAM_DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg2://aerostream:aerostream@postgres:5432/aerostream}
+      AEROSTREAM_BATCH_SIZE: ${AEROSTREAM_BATCH_SIZE:-10}
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - airflow_logs:/opt/airflow/logs
+      - airflow_plugins:/opt/airflow/plugins
+    ports:
+      - "${AIRFLOW_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    command: ["bash", "-c", "airflow webserver"]
+    restart: unless-stopped
+
+  airflow-scheduler:
+    build:
+      context: ./airflow
+      dockerfile: Dockerfile
+    container_name: aerostream-airflow-scheduler
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: ${AIRFLOW_DB_URL:-postgresql+psycopg2://aerostream:aerostream@postgres:5432/aerostream}
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-aerostream_secret_key}
+      AEROSTREAM_FASTAPI_URL: ${FASTAPI_URL:-http://fastapi:8000}
+      AEROSTREAM_DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg2://aerostream:aerostream@postgres:5432/aerostream}
+      AEROSTREAM_BATCH_SIZE: ${AEROSTREAM_BATCH_SIZE:-10}
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - airflow_logs:/opt/airflow/logs
+      - airflow_plugins:/opt/airflow/plugins
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    command: ["bash", "-c", "airflow scheduler"]
+    restart: unless-stopped
+
+
+volumes:
+  postgres_data:
+  airflow_logs:
+  airflow_plugins:
